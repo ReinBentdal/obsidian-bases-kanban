@@ -1,5 +1,5 @@
 import { App, TFile, Notice } from 'obsidian';
-import type { BasesEntry, BasesEntryGroup } from 'obsidian';
+import type { BasesEntry } from 'obsidian';
 
 /**
  * Types for drag operations
@@ -155,7 +155,7 @@ export class DragDropManager {
 		e: DragEvent,
 		columnEl: HTMLElement,
 		columnName: string,
-		index: number
+		_index: number
 	): void {
 		if (!this.dragState || this.dragState.type !== 'column') return;
 		if (this.dragState.sourceColumnName === columnName) return;
@@ -179,7 +179,7 @@ export class DragDropManager {
 	private handleColumnDrop(
 		e: DragEvent,
 		targetColumnName: string,
-		targetIndex: number
+		_targetIndex: number
 	): void {
 		e.preventDefault();
 		e.stopPropagation();
@@ -252,8 +252,8 @@ export class DragDropManager {
 	private handleCardDragOver(
 		e: DragEvent,
 		cardEl: HTMLElement,
-		columnName: string,
-		cardIndex: number
+		_columnName: string,
+		_cardIndex: number
 	): void {
 		if (!this.dragState || this.dragState.type !== 'card') return;
 		
@@ -303,7 +303,7 @@ export class DragDropManager {
 	private handleCardsContainerDragOver(
 		e: DragEvent,
 		cardsEl: HTMLElement,
-		columnName: string
+		_columnName: string
 	): void {
 		if (!this.dragState || this.dragState.type !== 'card') return;
 
@@ -451,7 +451,7 @@ export class DragDropManager {
 
 	// ==================== Common Handlers ====================
 
-	private handleDragEnd(e: DragEvent): void {
+	private handleDragEnd(_e: DragEvent): void {
 		this.clearDragState();
 	}
 
