@@ -246,7 +246,7 @@ body {
 .bases-embed .bases-kanban-container,
 .block-language-base .bases-kanban-container {
 	min-height: 300px;
-	max-height: 800px;
+	max-height: 500px;
 }
 
 /* Full page view */

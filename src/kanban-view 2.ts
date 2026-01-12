@@ -317,306 +317,38 @@ export class KanbanView extends BasesView {
 	}
 
 	private handleAddCard(columnValue: string | null): void {
-		const applyTemplateByDefault = this.plugin.settings.applyTemplateByDefault;
-		const modal = new AddCardModal(this.app, applyTemplateByDefault, (noteName, applyTemplate) => {
+		const modal = new AddCardModal(this.app, (noteName) => {
 			if (!noteName) return;
-			void this.createCardNote(noteName, columnValue, applyTemplate);
+			void this.createCardNote(noteName, columnValue);
 		});
 		modal.open();
 	}
 
-	private async createCardNote(noteName: string, columnValue: string | null, applyTemplate: boolean): Promise<void> {
+	private async createCardNote(noteName: string, columnValue: string | null): Promise<void> {
+		// Create the note
 		const fileName = noteName.endsWith('.md') ? noteName : `${noteName}.md`;
-
+		
 		try {
 			// Determine the folder - use current file's folder or root
 			const activeFile = this.app.workspace.getActiveFile();
 			const folder = activeFile?.parent?.path ?? '';
 			const fullPath = folder ? `${folder}/${fileName}` : fileName;
-
-			// Get the actual property name with correct case from existing cards
-			const actualPropertyName = this.getActualPropertyName();
-
-			// Get filter properties that should be applied to new cards
-			const filterProperties = this.getFilterProperties();
-
+			
+			// Create file with frontmatter if we have a column value
 			let content = '';
-
-			// If applying template, create empty file - template will provide structure
-			// Properties will be set after template is applied
-			if (!applyTemplate) {
-				// Build initial frontmatter only when not using template
-				const frontmatterProps: Record<string, unknown> = {};
-
-				// Add column value (groupBy property)
-				if (columnValue !== null && actualPropertyName) {
-					frontmatterProps[actualPropertyName] = columnValue;
-				}
-
-				// Add filter properties
-				for (const [key, value] of Object.entries(filterProperties)) {
-					frontmatterProps[key] = value;
-				}
-
-				// Create frontmatter string with proper YAML formatting
-				if (Object.keys(frontmatterProps).length > 0) {
-					const propsYaml = Object.entries(frontmatterProps)
-						.map(([k, v]) => {
-							if (Array.isArray(v)) {
-								// Format arrays as YAML lists
-								const items = v.map(item => `  - ${item}`).join('\n');
-								return `${k}:\n${items}`;
-							}
-							return `${k}: ${v}`;
-						})
-						.join('\n');
-					content = `---\n${propsYaml}\n---\n\n`;
-				}
+			if (columnValue !== null && this.groupByProperty) {
+				content = `---\n${this.groupByProperty}: ${columnValue}\n---\n\n`;
 			}
-
+			
 			const file = await this.app.vault.create(fullPath, content);
-
+			
 			// Open the new file
 			const leaf = this.app.workspace.getLeaf();
 			await leaf.openFile(file);
-
-			// Apply template if requested
-			if (applyTemplate) {
-				await this.applyTemplateToFile(file, columnValue, actualPropertyName, filterProperties);
-			}
-
+			
 			new Notice(`Created "${noteName}"`);
 		} catch (error) {
 			new Notice(`Failed to create note: ${error}`);
-		}
-	}
-
-	/**
-	 * Get the actual property name with correct case from existing cards' frontmatter
-	 */
-	private getActualPropertyName(): string | null {
-		if (!this.groupByProperty) return null;
-
-		// Find an existing card to get the actual property name case
-		for (const group of this.currentGroups) {
-			for (const entry of group.entries) {
-				const fileCache = this.app.metadataCache.getFileCache(entry.file);
-				const frontmatter = fileCache?.frontmatter;
-				if (frontmatter) {
-					// Find the property key that matches case-insensitively
-					const actualKey = Object.keys(frontmatter).find(
-						key => key.toLowerCase() === this.groupByProperty!.toLowerCase()
-					);
-					if (actualKey) {
-						return actualKey;
-					}
-				}
-			}
-		}
-
-		// Fallback to detected property name
-		return this.groupByProperty;
-	}
-
-	/**
-	 * Get filter properties from existing cards that should be applied to new cards.
-	 * This ensures new cards match the current view by copying common properties
-	 * (like tags) from existing cards.
-	 */
-	private getFilterProperties(): Record<string, unknown> {
-		const properties: Record<string, unknown> = {};
-
-		// Find an existing card to copy common properties from
-		const sampleEntry = this.currentGroups.flatMap(g => g.entries)[0];
-		if (!sampleEntry) return properties;
-
-		const fileCache = this.app.metadataCache.getFileCache(sampleEntry.file);
-		const frontmatter = fileCache?.frontmatter;
-		if (!frontmatter) return properties;
-
-		// Properties to skip (not filters, but card-specific data)
-		const skipProperties = new Set([
-			'position', // internal
-			this.groupByProperty?.toLowerCase(), // already handled as column value
-			this.getSortPropertyFromConfig()?.toLowerCase(), // sort property
-			this.plugin.settings.createdAtProperty.toLowerCase(),
-			this.plugin.settings.updatedAtProperty.toLowerCase(),
-			'created', 'modified', 'created_at', 'updated_at', // timestamps
-			'authors', 'author', // will be set by template
-		]);
-
-		// Copy tags and other likely filter properties
-		for (const [key, value] of Object.entries(frontmatter)) {
-			const keyLower = key.toLowerCase();
-
-			// Skip properties we shouldn't copy
-			if (skipProperties.has(keyLower)) continue;
-
-			// Copy tags (arrays starting with common tag property names)
-			if (keyLower === 'tags' || keyLower === 'tag') {
-				if (Array.isArray(value) && value.length > 0) {
-					properties[key] = [...value];
-				}
-				continue;
-			}
-
-			// Check if this property has the same value across all cards (likely a filter)
-			if (this.isCommonPropertyValue(key, value)) {
-				properties[key] = value;
-			}
-		}
-
-		return properties;
-	}
-
-	/**
-	 * Check if a property has the same value across all cards in the current view
-	 */
-	private isCommonPropertyValue(propName: string, value: unknown): boolean {
-		const propNameLower = propName.toLowerCase();
-
-		for (const group of this.currentGroups) {
-			for (const entry of group.entries) {
-				const fileCache = this.app.metadataCache.getFileCache(entry.file);
-				const fm = fileCache?.frontmatter;
-				if (!fm) continue;
-
-				// Find the property (case-insensitive)
-				const actualKey = Object.keys(fm).find(k => k.toLowerCase() === propNameLower);
-				if (!actualKey) return false;
-
-				const entryValue = fm[actualKey];
-
-				// Compare values
-				if (Array.isArray(value) && Array.isArray(entryValue)) {
-					// For arrays (like tags), check if they share at least one common value
-					const common = value.filter(v => entryValue.includes(v));
-					if (common.length === 0) return false;
-				} else if (entryValue !== value) {
-					return false;
-				}
-			}
-		}
-
-		return true;
-	}
-
-	/**
-	 * Get the actual property name with correct case for a given property
-	 */
-	private getActualPropertyNameFor(propName: string): string {
-		for (const group of this.currentGroups) {
-			for (const entry of group.entries) {
-				const fileCache = this.app.metadataCache.getFileCache(entry.file);
-				const frontmatter = fileCache?.frontmatter;
-				if (frontmatter) {
-					const actualKey = Object.keys(frontmatter).find(
-						key => key.toLowerCase() === propName.toLowerCase()
-					);
-					if (actualKey) {
-						return actualKey;
-					}
-				}
-			}
-		}
-		return propName;
-	}
-
-	private async applyTemplateToFile(file: TFile, columnValue: string | null, propertyName: string | null, filterProperties: Record<string, unknown> = {}): Promise<void> {
-		const templatePath = this.plugin.settings.templatePath;
-		if (!templatePath) return;
-
-		// Get Templater plugin
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const templater = (this.app as any).plugins?.plugins?.['templater-obsidian'];
-		if (!templater) {
-			new Notice('Templater plugin not found. Template not applied.');
-			return;
-		}
-
-		const templateFile = this.app.vault.getAbstractFileByPath(templatePath);
-		if (!templateFile || !(templateFile instanceof TFile)) {
-			new Notice(`Template not found: ${templatePath}`);
-			return;
-		}
-
-		try {
-			// Small delay to ensure file is fully active
-			await new Promise(resolve => setTimeout(resolve, 100));
-
-			// Read template content first
-			const templateContent = await this.app.vault.read(templateFile);
-
-			// Try to use Templater to process the template
-			const templaterApi = templater.templater;
-			let applied = false;
-
-			// Method 1: append_template_to_active_file (appends and processes)
-			if (!applied && typeof templaterApi.append_template_to_active_file === 'function') {
-				try {
-					await templaterApi.append_template_to_active_file(templateFile);
-					applied = true;
-				} catch (e) {
-					console.log('Kanban: append_template_to_active_file failed', e);
-				}
-			}
-
-			// Method 2: overwrite_active_file_commands (processes current file)
-			if (!applied && typeof templaterApi.overwrite_active_file_commands === 'function') {
-				try {
-					await this.app.vault.modify(file, templateContent);
-					await new Promise(resolve => setTimeout(resolve, 50));
-					await templaterApi.overwrite_active_file_commands();
-					applied = true;
-				} catch (e) {
-					console.log('Kanban: overwrite_active_file_commands failed', e);
-				}
-			}
-
-			// Method 3: Fallback - just copy template content directly
-			if (!applied) {
-				await this.app.vault.modify(file, templateContent);
-			}
-
-			// After template is applied, ensure properties are set in frontmatter
-			// Delay to let Templater finish processing
-			await new Promise(resolve => setTimeout(resolve, 200));
-
-			await this.app.fileManager.processFrontMatter(file, (fm) => {
-				// Apply column value (groupBy property)
-				if (columnValue !== null && propertyName) {
-					const actualKey = Object.keys(fm).find(
-						key => key.toLowerCase() === propertyName.toLowerCase()
-					) ?? propertyName;
-					fm[actualKey] = columnValue;
-				}
-
-				// Apply filter properties
-				for (const [key, value] of Object.entries(filterProperties)) {
-					const actualKey = Object.keys(fm).find(
-						k => k.toLowerCase() === key.toLowerCase()
-					) ?? key;
-
-					if (Array.isArray(value)) {
-						// Merge arrays (like tags)
-						const existing = fm[actualKey];
-						if (Array.isArray(existing)) {
-							// Add items that don't already exist
-							for (const item of value) {
-								if (!existing.includes(item)) {
-									existing.push(item);
-								}
-							}
-						} else {
-							fm[actualKey] = [...value];
-						}
-					} else {
-						fm[actualKey] = value;
-					}
-				}
-			});
-		} catch (error) {
-			new Notice(`Failed to apply template: ${error}`);
 		}
 	}
 
@@ -686,20 +418,12 @@ export class KanbanView extends BasesView {
 		}
 
 		await this.app.fileManager.processFrontMatter(file, (fm) => {
-			// Find the actual property key in frontmatter (case-insensitive match)
-			// This preserves the original casing (e.g., "Status" instead of "status")
-			const actualKey = Object.keys(fm).find(
-				key => key.toLowerCase() === groupByProperty.toLowerCase()
-			) ?? groupByProperty;
-
 			if (newColumnValue === '') {
 				// Moving to "(No value)" column - remove the property
-				delete fm[actualKey];
+				delete fm[groupByProperty];
 			} else {
-				fm[actualKey] = newColumnValue;
+				fm[groupByProperty] = newColumnValue;
 			}
-
-			this.applyTimestamps(fm);
 		});
 	}
 
@@ -770,12 +494,7 @@ export class KanbanView extends BasesView {
 			const newValue = isDescending ? (count - index) : (index + 1);
 			
 			return this.app.fileManager.processFrontMatter(entry.file, (fm) => {
-				// Find the actual property key in frontmatter (case-insensitive match)
-				const actualKey = Object.keys(fm).find(
-					key => key.toLowerCase() === sortProperty.toLowerCase()
-				) ?? sortProperty;
-				fm[actualKey] = newValue;
-				this.applyTimestamps(fm);
+				fm[sortProperty] = newValue;
 			});
 		});
 
@@ -871,36 +590,6 @@ export class KanbanView extends BasesView {
 	}
 
 	/**
-	 * Apply timestamps to frontmatter if enabled in settings.
-	 * Sets created_at if it doesn't exist, always updates updated_at.
-	 */
-	private applyTimestamps(fm: Record<string, unknown>): void {
-		const settings = this.plugin.settings;
-		if (!settings.enableTimestamps) {
-			return;
-		}
-
-		const now = new Date().toISOString();
-
-		// Find actual keys (case-insensitive) or use configured names
-		const createdAtKey = Object.keys(fm).find(
-			key => key.toLowerCase() === settings.createdAtProperty.toLowerCase()
-		) ?? settings.createdAtProperty;
-
-		const updatedAtKey = Object.keys(fm).find(
-			key => key.toLowerCase() === settings.updatedAtProperty.toLowerCase()
-		) ?? settings.updatedAtProperty;
-
-		// Only set created_at if it doesn't exist
-		if (fm[createdAtKey] === undefined) {
-			fm[createdAtKey] = now;
-		}
-
-		// Always update updated_at
-		fm[updatedAtKey] = now;
-	}
-
-	/**
 	 * Get the column order from config
 	 */
 	private getColumnOrderFromConfig(): string[] {
@@ -976,13 +665,11 @@ export class KanbanView extends BasesView {
 
 // Modal for adding a new card
 class AddCardModal extends Modal {
-	private onSubmit: (noteName: string, applyTemplate: boolean) => void;
+	private onSubmit: (noteName: string) => void;
 	private inputEl: HTMLInputElement;
-	private applyTemplate: boolean;
 
-	constructor(app: App, applyTemplateByDefault: boolean, onSubmit: (noteName: string, applyTemplate: boolean) => void) {
+	constructor(app: App, onSubmit: (noteName: string) => void) {
 		super(app);
-		this.applyTemplate = applyTemplateByDefault;
 		this.onSubmit = onSubmit;
 	}
 
@@ -990,9 +677,9 @@ class AddCardModal extends Modal {
 		const { contentEl } = this;
 		contentEl.empty();
 		contentEl.addClass('bases-kanban-modal');
-
+		
 		contentEl.createEl('h3', { text: 'Create new card' });
-
+		
 		new Setting(contentEl)
 			.setName('Note name')
 			.addText(text => {
@@ -1000,15 +687,7 @@ class AddCardModal extends Modal {
 				text.setPlaceholder('Enter note name')
 					.onChange(() => {});
 			});
-
-		new Setting(contentEl)
-			.setName('Apply template')
-			.addToggle(toggle => toggle
-				.setValue(this.applyTemplate)
-				.onChange((value) => {
-					this.applyTemplate = value;
-				}));
-
+		
 		new Setting(contentEl)
 			.addButton(btn => btn
 				.setButtonText('Create')
@@ -1016,24 +695,24 @@ class AddCardModal extends Modal {
 				.onClick(() => {
 					const value = this.inputEl.value.trim();
 					if (value) {
-						this.onSubmit(value, this.applyTemplate);
+						this.onSubmit(value);
 						this.close();
 					}
 				}))
 			.addButton(btn => btn
 				.setButtonText('Cancel')
 				.onClick(() => this.close()));
-
+		
 		// Focus input
 		this.inputEl.focus();
-
+		
 		// Handle Enter key
 		this.inputEl.addEventListener('keydown', (evt) => {
 			if (evt.key === 'Enter') {
 				evt.preventDefault();
 				const value = this.inputEl.value.trim();
 				if (value) {
-					this.onSubmit(value, this.applyTemplate);
+					this.onSubmit(value);
 					this.close();
 				}
 			}
